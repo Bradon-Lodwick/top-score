@@ -5,6 +5,7 @@ cffi==1.12.3
 chardet==3.0.4
 discord.py==1.0.1
 idna==2.8
+marshmallow-mongoengine==0.9.1
 mongoengine==0.17.0
 multidict==4.5.2
 pycparser==2.19
