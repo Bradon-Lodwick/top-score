@@ -2,133 +2,254 @@
 # -*- coding: utf-8 -*-
 
 import os
-from datetime import datetime
-from uuid import uuid4
 
-from sqlalchemy import create_engine, Column, String, Boolean, Integer, ForeignKey, DateTime
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, sessionmaker
-from sqlalchemy.pool import QueuePool
+import mongoengine as me
 
-# Create an engine that allows connection pooling
-engine = create_engine(os.environ["DATABASE_URL"], pool_size=10, max_overflow=5, poolclass=QueuePool)
+from bot_setup import bot
 
-# The base to use for table objects
-Base = declarative_base()
-
-# The length values for table information
-len_snowflake = 18
-len_name = 32
-len_guild_name = 100
-len_pic_hash = 34
-len_discriminator = 4
-
-# Session object to be used when creating new sessions
-Session = sessionmaker(bind=engine)
+# Setup the mongoengine connection
+me.connect('top-score', host=os.environ["MONGODB_URI"])
 
 
-class User(Base):
-    """Defines the table for the user object."""
-    __tablename__ = "users"
+class GivenEntity(me.EmbeddedDocument):
+    """
+    Represents a point in the database.
+    """
 
-    id = Column(String(len_snowflake), primary_key=True)
-    username = Column(String(len_name), nullable=False)
-    discriminator = Column(String(len_discriminator), nullable=False)
-    avatar = Column(String(len_pic_hash))
+    giver_id = me.IntField(nullable=False)
+    receiver_id = me.IntField(nullable=False)
 
-    memberships = relationship("Member", back_populates="user", uselist=True)
+    meta = {"allow_inheritance": True}
 
+    def __init__(self, giver_id, receiver_id, *args, **kwargs):
+        """
+        Creates a new given entity.
 
-class Member(Base):
-    """Defines the table for the member object, which represent a user with guild-specific settings."""
-    __tablename__ = "members"
+        Args:
+            giver_id (int): The id of the giver.
+            receiver_id (int): The id of the receiver.
+            *args:
+            **kwargs:
+        """
+        super().__init__(*args, **kwargs)
+        self.giver_id = giver_id
+        self.receiver_id = receiver_id
+        self.discord_giver = None
+        self.discord_receiver = None
 
-    id = Column(UUID, primary_key=True, default=uuid4)
-    user_id = Column(String(len_snowflake), ForeignKey("users.id"), nullable=False)
-    guild_id = Column(String(len_snowflake), ForeignKey("guilds.id"), nullable=False)
-    nickname = Column(String(len_name))
-    score_admin = Column(Boolean, default=False, nullable=False)
-    score_giver = Column(Boolean, default=False, nullable=False)
+    @property
+    async def giver(self):
+        """
+        Gets the giver of the entity as a discord User object.
 
-    user = relationship("User", back_populates="memberships", uselist=False)
-    guild = relationship("Guild", back_populates="members", uselist=False)
+        Returns:
+            discord(User): The giver of the entity.
+        """
 
+        # Load the giver user if it is not loaded yet
+        if self.giver is None:
+            self.discord_giver = await bot.fetch_user(self.giver_id)
+        return self.discord_giver
 
-class Guild(Base):
-    """Defines the table for the guild object."""
-    __tablename__ = "guilds"
+    @giver.setter
+    def giver(self, giver):
+        """
+        Sets the discord giver object in a way that allows the database to be updated.
 
-    id = Column(String(len_snowflake), primary_key=True)
-    name = Column(String(len_name), nullable=False)
-    icon = Column(String(len_pic_hash))
-    channel_id = Column(String(len_snowflake))
-    channel_name = Column(String(len_snowflake))
+        Args:
+            giver (discord.User): The giver of the entity.
+        """
 
-    members = relationship("Member", back_populates="guild", uselist=True)
-    points = relationship("Point", back_populates="guild", uselist=True)
-    quotes = relationship("Quote", back_populates="guild", uselist=True)
-    roles = relationship("Role", back_populates="guild", uselist=True)
-    categories = relationship("Category", back_populates="guild", uselist=True)
+        # Make sure the user was not None
+        if giver is None:
+            raise ValueError("User cannot be None")
+        # Sets the guild as well as the guild id for the database.
+        self.discord_giver = giver
+        self.discord_giver = giver.id
 
+    @property
+    async def receiver(self):
+        """
+        Gets the receiver of the entity as a discord User object.
 
-class Role(Base):
-    """Defines the table for the role object."""
-    __tablename__ = "roles"
+        Returns:
+            discord(User): The receiver of the entity.
+        """
 
-    id = Column(String(len_snowflake), primary_key=True)
-    guild_id = Column(String(len_snowflake), ForeignKey("guilds.id"))
-    name = Column(String(len_guild_name))
-    score_admin = Column(Boolean, default=False, nullable=False)
-    score_giver = Column(Boolean, default=False, nullable=False)
+        # Load the receiver user if it is not loaded yet
+        if self.receiver is None:
+            self.discord_receiver = await bot.fetch_user(self.receiver_id)
+        return self.discord_receiver
 
-    guild = relationship("Guild", back_populates="roles", uselist=False)
+    @giver.setter
+    def giver(self, giver):
+        """
+        Sets the discord guild object in a way that allows the database to be updated.
 
+        Args:
+            giver (discord.User): The giver of the entity.
+        """
 
-class Category(Base):
-    """Defines the table for the category object."""
-    __tablename__ = "categories"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(len_guild_name))
-    guild_id = Column(String(len_snowflake), ForeignKey("guilds.id"))
-
-    guild = relationship("Guild", back_populates="categories", uselist=False)
-    points = relationship("Point", back_populates="category", uselist=True)
-
-
-class Point(Base):
-    """Defines the table for the point object."""
-    __tablename__ = "points"
-
-    id = Column(UUID, primary_key=True, default=uuid4)
-    giver_id = Column(UUID(as_uuid=True), ForeignKey("members.id"), nullable=False)
-    receiver_id = Column(UUID(as_uuid=True), ForeignKey("members.id"), nullable=False)
-    guild_id = Column(String(len_snowflake), ForeignKey("guilds.id"), nullable=False)
-    category_id = Column(Integer, ForeignKey("categories.id"))
-    date = Column(DateTime, default=datetime.now, nullable=False)
-
-    category = relationship("Category", back_populates="points", uselist=False)
-    giver = relationship("Member", foreign_keys=[giver_id], uselist=False)
-    receiver = relationship("Member", foreign_keys=[receiver_id], uselist=False)
-    guild = relationship("Guild", back_populates="points", uselist=False)
-
-
-class Quote(Base):
-    """Defines the table for the quote object."""
-    __tablename__ = "quotes"
-
-    id = Column(UUID, primary_key=True, default=uuid4)
-    author_id = Column(UUID(as_uuid=True), ForeignKey("members.id"), nullable=False)
-    quoter_id = Column(UUID(as_uuid=True), ForeignKey("members.id"), nullable=False)
-    guild_id = Column(String(len_snowflake), ForeignKey("guilds.id"), nullable=False)
-    date = Column(DateTime, default=datetime.now, nullable=False)
-
-    author = relationship("Member", foreign_keys=[author_id], uselist=False)
-    quoter = relationship("Member", foreign_keys=[quoter_id], uselist=False)
-    guild = relationship("Guild", back_populates="quotes", uselist=False)
+        # Make sure the user was not None
+        if giver is None:
+            raise ValueError("User cannot be None")
+        # Sets the guild as well as the guild id for the database.
+        self.discord_giver = giver
+        self.discord_giver = giver.id
 
 
-# Creates all the tables when this file is directly ran
-if __name__ == "__main__":
-    Base.metadata.create_all(engine)
+class Point(GivenEntity):
+    """
+    Represents a point in the database.
+    """
+
+    value = me.IntField(nullable=False)
+    category = me.StringField()
+
+    def __init__(self, giver_id, receiver_id, value, category=None, *args, **kwargs):
+        """
+        Creates a new point.
+
+        Args:
+            giver_id (int): The id of the giver.
+            receiver_id (int): The id of the receiver.
+            value (int): The value of the point.
+            category (str): The category of the point.
+        """
+
+        super().__init__(giver_id, receiver_id, *args, **kwargs)
+        self.value = value
+        self.category = category
+
+
+class Quote(GivenEntity):
+    """
+    Represents a quote in the database.
+    """
+
+    text = me.StringField(nullable=False)
+
+    def __init__(self, giver_id, receiver_id, text, *args, **kwargs):
+        """
+        Creates a new point.
+
+        Args:
+            giver_id (int): The id of the giver.
+            receiver_id (int): The id of the receiver.
+            text (str): The text of the quoted message.
+        """
+
+        super().__init__(giver_id, receiver_id, *args, **kwargs)
+        self.text = text
+
+
+class ScoreGuild(me.Document):
+    """
+    Represents a guild with it's scores.
+    """
+
+    guild_id = me.IntField(primary_key=True)
+    points = me.EmbeddedDocumentListField(Point)
+    quotes = me.EmbeddedDocumentListField(Quote)
+    admin_role_id = me.IntField()
+    judge_role_id = me.IntField()
+
+    def __init__(self, guild_id, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.guild_id = guild_id
+        self._guild = None
+        self._admin_role = None
+        self._judge_role = None
+
+    @property
+    async def guild(self):
+        """
+        The discord guild object.
+
+        Returns:
+            A discord guild object.
+        """
+
+        # Load the discord guild if it is not loaded yet
+        if self._guild is None:
+            self._guild = await bot.fetch_guild(self.guild_id)
+            # If the guild is still None, then it is an invalid guild id
+            if self._guild is None:
+                raise ValueError("invalid guild id")
+        return self._guild
+
+    @guild.setter
+    def guild(self, guild):
+        """
+        Sets the discord guild object in a way that allows the database to be updated.
+
+        Args:
+            guild (discord.Guild): The guild to have it set to.
+        """
+
+        # Make sure the guild was not None
+        if guild is None:
+            raise ValueError("Guild cannot be None")
+        # Sets the guild as well as the guild id for the database.
+        self._guild = guild
+        self.guild_id = guild.id
+
+    @property
+    def admin_role(self):
+        """
+        The discord admin role object.
+
+        Returns:
+            A discord role object.
+        """
+
+        # Load the discord admin role if it is not loaded yet
+        if self._admin_role is None:
+            self._admin_role = self.guild.fetch_role(self.guild_id)
+            # If the role is still None, then it is an invalid role id
+            if self._admin_role is None:
+                raise ValueError("invalid role id")
+        return self._admin_role
+
+    @admin_role.setter
+    def admin_role(self, role):
+        """
+        Sets the discord admin role object in a way that allows the database to be updated.
+
+        Args:
+            role (discord.Role): The role to have it set to.
+        """
+
+        # Sets the role as well as the role id for the database.
+        self._admin_role = role
+        self.admin_role_id = role.id
+
+    @property
+    def judge_role(self):
+        """
+        The discord judge role object.
+
+        Returns:
+            A discord role object.
+        """
+
+        # Load the discord judge role if it is not loaded yet
+        if self._judge_role is None:
+            self._judge_role = self.guild.fetch_role(self.judge_role_id)
+            # If the role is still None, then it is an invalid role id
+            if self._admin_role is None:
+                raise ValueError("invalid role id")
+        return self._judge_role
+
+    @judge_role.setter
+    def judge_role(self, role):
+        """
+        Sets the discord judge role object in a way that allows the database to be updated.
+
+        Args:
+            role (discord.Role): The role to have it set to.
+        """
+
+        # Sets the role as well as the role id for the database.
+        self._judge_role = role
+        self.judge_role_id = role.id
